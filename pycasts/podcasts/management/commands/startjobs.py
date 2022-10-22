@@ -1,27 +1,35 @@
+# Standard Library
+
+import logging
+
+# Django
+
+from django.conf import settings
+
 from django.core.management.base import BaseCommand
+
+# Third Party
 
 import feedparser
 
 from dateutil import parser
 
+from apscheduler.schedulers.blocking import BlockingScheduler
+
+from apscheduler.triggers.cron import CronTrigger
+
+from django_apscheduler.jobstores import DjangoJobStore
+
+from django_apscheduler.models import DjangoJobExecution
+
+# Models
+
 from podcasts.models import Episode
+
+logger = logging.getLogger(__name__)
 
 
 def save_new_episodes(feed):
-    """Saves new episodes to the database.
-
-
-    Checks the episode GUID against the episodes currently stored in the
-
-    database. If not found, then a new `Episode` is added to the database.
-
-
-    Args:
-
-        feed: requires a feedparser object
-
-    """
-
     podcast_title = feed.channel.title
 
     podcast_image = feed.channel.image["href"]
@@ -75,8 +83,51 @@ def fetch_duedraghialmicroono_episodes():
 
 
 class Command(BaseCommand):
+    help = "Runs apscheduler."
 
     def handle(self, *args, **options):
-        fetch_realpython_episodes()
+        scheduler = BlockingScheduler(timezone=settings.TIME_ZONE)
+        scheduler.add_jobstore(DjangoJobStore(), "default")
 
-        fetch_duedraghialmicroono_episodes()
+        scheduler.add_job(
+            fetch_realpython_episodes,
+            trigger="interval",
+            minutes=2,
+            id="The Real Python Podcast",
+            max_instances=1,
+            replace_existing=True,
+        )
+        logger.info("Added job: The Real Python Podcast.")
+
+        scheduler.add_job(
+            fetch_duedraghialmicroono_episodes,
+            trigger="interval",
+            minutes=2,
+            id="Talk Python Feed",
+            max_instances=1,
+            replace_existing=True,
+        )
+        logger.info("Added job: Due Draghi al Microfono Feed.")
+
+        scheduler.add_job(
+            delete_old_job_executions,
+            trigger=CronTrigger(
+                day_of_week="mon", hour="00", minute="00"
+            ),  # Midnight on Monday, before start of the next work week.
+            id="Delete Old Job Executions",
+            max_instances=1,
+            replace_existing=True,
+        )
+        logger.info("Added weekly job: Delete Old Job Executions.")
+
+        try:
+            logger.info("Starting scheduler...")
+            scheduler.start()
+        except KeyboardInterrupt:
+            logger.info("Stopping scheduler...")
+            scheduler.shutdown()
+            logger.info("Scheduler shut down successfully!")
+
+
+def delete_old_job_executions(max_age=604_800):
+    DjangoJobExecution.objects.delete_old_job_executions(max_age)
